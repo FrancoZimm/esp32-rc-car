@@ -6,11 +6,20 @@
   - Sensor ultrasónico HC-SR04 para no chocar de frente
   - Control desde una app de MIT App Inventor o cualquier
     mando/app Bluetooth que mande los mismos caracteres
+  - Control por WiFi + MQTT desde el mando M5Stack (m5_mando.ino)
 
   Autor: Franco Zimmermann (@FrancoZimm)
 */
 
 #include <BluetoothSerial.h>
+
+// Pon USAR_MQTT a 0 si solo quieres Bluetooth
+#define USAR_MQTT 1
+
+#if USAR_MQTT
+#include <WiFi.h>
+#include <PubSubClient.h>   // librería "PubSubClient" de Nick O'Leary
+#endif
 
 #if !defined(CONFIG_BT_ENABLED) || !defined(CONFIG_BLUEDROID_ENABLED)
 #error "Bluetooth no está habilitado. Usa la placa 'ESP32 Dev Module'."
@@ -44,6 +53,14 @@ const int   PWM_BITS         = 8;    // 0..255
 const int   VELOCIDAD_MIN    = 90;   // por debajo los motores no arrancan
 const unsigned long INTERVALO_SENSOR = 60;  // ms entre medidas
 
+#if USAR_MQTT
+const char* WIFI_SSID   = "TU_WIFI";
+const char* WIFI_PASS   = "TU_PASSWORD";
+const char* MQTT_BROKER = "broker.hivemq.com";    // o la IP de tu Mosquitto
+const int   MQTT_PORT   = 1883;
+const char* MQTT_TOPIC  = "francozimm/coche/cmd";  // el mismo que en el M5Stack
+#endif
+
 // ---------- Estado ----------
 BluetoothSerial bt;
 
@@ -56,6 +73,12 @@ int distancia = 999;          // última medida en cm
 unsigned long ultimaMedida = 0;
 bool estabaConectado = false;
 bool bocina = false;          // 'V' / 'v' desde la app
+
+#if USAR_MQTT
+WiFiClient wifi;
+PubSubClient mqtt(wifi);
+unsigned long ultimoIntentoMQTT = 0;
+#endif
 
 // ---------- PWM (compatible con el core 2.x y 3.x) ----------
 void prepararPWM(int pin, int canal) {
@@ -173,6 +196,42 @@ void procesarComando(char c) {
   }
 }
 
+#if USAR_MQTT
+// ---------- MQTT (mando M5Stack) ----------
+// El M5Stack manda números:
+//   0 parar · 1 adelante · 2 atrás · 3 izquierda · 4 derecha · 5 bocina
+// También acepta las mismas letras que por Bluetooth (F, B, S...).
+void alRecibirMQTT(char* topic, byte* payload, unsigned int largo) {
+  if (largo == 0) return;
+  char c = (char)payload[0];
+
+  switch (c) {
+    case '0': procesarComando('S'); break;
+    case '1': procesarComando('F'); break;
+    case '2': procesarComando('B'); break;
+    case '3': procesarComando('L'); break;
+    case '4': procesarComando('R'); break;
+    case '5': bocina = !bocina;     break;
+    default:  procesarComando(c);   break;
+  }
+  Serial.printf("MQTT: %c\n", c);
+}
+
+// Conecta WiFi y MQTT sin bloquear el coche: reintenta cada 3 s
+void mantenerMQTT() {
+  if (WiFi.status() != WL_CONNECTED) return;
+  if (mqtt.connected()) { mqtt.loop(); return; }
+  if (millis() - ultimoIntentoMQTT < 3000) return;
+  ultimoIntentoMQTT = millis();
+
+  String id = "coche-" + String((uint32_t)ESP.getEfuseMac(), HEX);
+  if (mqtt.connect(id.c_str())) {
+    mqtt.subscribe(MQTT_TOPIC);
+    Serial.println("MQTT conectado");
+  }
+}
+#endif
+
 // ---------- Programa ----------
 void setup() {
   Serial.begin(115200);
@@ -192,12 +251,22 @@ void setup() {
   parar();
   bt.begin(NOMBRE_BT);
   Serial.printf("Listo. Busca '%s' en el Bluetooth del movil.\n", NOMBRE_BT);
+
+#if USAR_MQTT
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(WIFI_SSID, WIFI_PASS);   // se conecta en segundo plano
+  mqtt.setServer(MQTT_BROKER, MQTT_PORT);
+  mqtt.setCallback(alRecibirMQTT);
+#endif
 }
 
 void loop() {
   // 1. Comandos: por Bluetooth (app / mando) o por USB (pruebas desde el PC)
   while (bt.available())     procesarComando(bt.read());
   while (Serial.available()) procesarComando(Serial.read());
+#if USAR_MQTT
+  mantenerMQTT();                       // y por WiFi desde el M5Stack
+#endif
 
   // 2. Si se pierde la conexión, el coche se para
   bool conectado = bt.hasClient();
@@ -207,7 +276,12 @@ void loop() {
     Serial.println("Conexion perdida: coche parado");
   }
   estabaConectado = conectado;
-  digitalWrite(PIN_LED, conectado);
+
+  bool algunMando = conectado;
+#if USAR_MQTT
+  algunMando = algunMando || mqtt.connected();
+#endif
+  digitalWrite(PIN_LED, algunMando);    // LED encendido = hay mando conectado
 
   // 3. Medir distancia cada cierto tiempo
   if (millis() - ultimaMedida >= INTERVALO_SENSOR) {
