@@ -157,4 +157,10 @@ Funciona con el core de ESP32 2.x y 3.x. Los valores que más se suelen tocar es
 
 ---
 
-Hecho por **Franco Zimmermann** · [@FrancoZimm](https://github.com/FrancoZimm)
+## Equipo
+
+Proyecto hecho en equipo:
+
+- **Franco Zimmermann** · [@FrancoZimm](https://github.com/FrancoZimm)
+- **Lucas Toledano** · [@LucasToledanoDuque](https://github.com/LucasToledanoDuque)
+- **Daniel de Abajo** · [@danieldeab](https://github.com/danieldeab)
